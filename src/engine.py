@@ -39,41 +39,10 @@ class Engine:
         self.game_watcher = None
 
         self._last_dashboard = {}
-        self._latest_dashboard = None   # most recent Status.json contents
-        self._game_running = None       # None until the first process check
-        self._primed = False            # startup journal pass finished
         self.running = False
 
     def _on_mqtt_status(self, connected):
-        if connected:
-            self._clear_stale_raw_topics()
-            self._republish_current()
         self.on_mqtt_status(connected)
-
-    def _republish_current(self):
-        """The broker connection is made in the background, so the first
-        game-running / state / dashboard publishes at startup can happen
-        before it is up and are silently dropped. Re-send everything we
-        currently know each time we (re)connect."""
-        t = self.settings["topics"]
-        if self._game_running is not None:
-            self.mqtt.publish([t["gamerunning"]], self._game_running, retain=True)
-        if self._primed:
-            self._publish_known_state()
-        if self._latest_dashboard is not None:
-            self._last_dashboard = {}   # forget what we think was sent
-            self._on_dashboard(self._latest_dashboard)
-
-    def _clear_stale_raw_topics(self):
-        """In Processed mode the bare <root>/Journal and <root>/Dashboard topics
-        are unused. If the app previously ran in Raw mode, a retained raw
-        message is still sitting there and looks like 'raw data'. An empty
-        retained payload deletes it from the broker."""
-        t = self.settings["topics"]
-        if self.settings.get("journal_format", "Processed") != "Raw":
-            self.mqtt.publish_raw(self.mqtt.topic_for(t["journal"]), "", retain=True)
-        if self.settings.get("dashboard_format", "Processed") != "Raw":
-            self.mqtt.publish_raw(self.mqtt.topic_for(t["dashboard"]), "", retain=True)
 
     # ---- lifecycle ---------------------------------------------------
 
@@ -116,7 +85,6 @@ class Engine:
 
     def _on_game_running(self, running):
         t = self.settings["topics"]
-        self._game_running = running
         self.mqtt.publish([t["gamerunning"]], running, retain=True)
 
     def _publish_location(self):
@@ -150,10 +118,6 @@ class Engine:
         """Called once the silent startup priming pass over the current
         journal file completes -- publish the reconstructed state/location/ship
         immediately rather than waiting for the next live event."""
-        self._primed = True
-        self._publish_known_state()
-
-    def _publish_known_state(self):
         t = self.settings["topics"]
         if self.settings.get("location", True):
             self._publish_location()
@@ -195,7 +159,6 @@ class Engine:
 
     def _on_dashboard(self, data):
         t = self.settings["topics"]
-        self._latest_dashboard = data
 
         if self.settings.get("dashboard_format", "Processed") == "Raw":
             if data != self._last_dashboard:
