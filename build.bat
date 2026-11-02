@@ -13,6 +13,9 @@ echo Installing dependencies...
 pip install --upgrade pip
 pip install -r requirements.txt
 
+echo Generating icon...
+python make_icon.py
+
 echo Building executable with PyInstaller...
 pyinstaller --noconfirm --onefile --windowed ^
     --name "ED-MQTT-Telemetry" ^
