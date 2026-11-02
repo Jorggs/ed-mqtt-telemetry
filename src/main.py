@@ -41,6 +41,7 @@ class App:
         self.engine = None
         self.status = STATE_STOPPED
         self.action_queue = queue.Queue()
+        self._icon_lock = threading.RLock()
 
         self.icon = pystray.Icon(
             "ed_mqtt_telemetry",
@@ -87,11 +88,27 @@ class App:
     def _log(self, msg):
         print(msg, flush=True)
 
+    def _refresh_icon(self):
+        # Redraw the tray icon and tooltip from the current status.
+        with self._icon_lock:
+            status = self.status
+            try:
+                self.icon.icon = make_icon_image(COLORS[status])
+                self.icon.title = f"ED MQTT Telemetry ({status})"
+                self.icon.update_menu()
+            except Exception as e:
+                self._log(f"Tray icon update failed: {e}")
+
     def _set_status(self, status):
         self.status = status
-        self.icon.icon = make_icon_image(COLORS[status])
-        self.icon.title = f"ED MQTT Telemetry ({status})"
-        self.icon.update_menu()
+        self._refresh_icon()
+
+    def _tray_ready(self, icon):
+        # Runs once the tray icon exists. MQTT can connect before this point,
+        # in which case that status change was never drawn -- so draw the
+        # current status now.
+        icon.visible = True
+        self._refresh_icon()
 
     def _on_mqtt_status(self, connected):
         if connected:
@@ -150,7 +167,9 @@ class App:
     def run(self):
         # pystray's own event loop runs in a background thread; the Tk
         # mainloop (required for the settings dialog) owns the main thread.
-        threading.Thread(target=self.icon.run, daemon=True).start()
+        threading.Thread(
+            target=lambda: self.icon.run(setup=self._tray_ready), daemon=True
+        ).start()
         if self.settings.get("autostart", True):
             self.start_engine()
         self.tk_root.after(200, self._poll_queue)
