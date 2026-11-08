@@ -31,7 +31,7 @@ separate "Progress" event -- both fire together at load and are merged here
 into the combined [level, pct] pairs the HA templates expect.
 """
 
-# Docking state values published on <root>/Docking/State. These are display
+# Docking state values published in the <root>/Docking JSON item. These are display
 # strings so Home Assistant can show them as they are.
 DOCK_IDLE = "Idle"
 DOCK_REQUESTED = "Requested"
