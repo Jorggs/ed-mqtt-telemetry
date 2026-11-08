@@ -40,6 +40,8 @@ DEFAULT_SETTINGS = {
                                         # Ship/JumpRange topics (extracted from
                                         # LoadGame/Loadout/ShipyardSwap, without
                                         # publishing those full raw events)
+    "docking": True,                   # publishes one consolidated Docking JSON
+                                        # item built from the docking journal events
     # Journal event types that are never published to MQTT (still processed
     # internally for state-tracking purposes where relevant, e.g. Loadout's
     # MaxJumpRange feeds into Telemetry/State, but the raw event itself is
@@ -52,6 +54,12 @@ DEFAULT_SETTINGS = {
         "Music",
         "ShipLocker",
         "Loadout",
+        # Covered by the consolidated Docking item instead:
+        "DockingRequested",
+        "DockingGranted",
+        "DockingDenied",
+        "DockingCancelled",
+        "DockingTimeout",
     ],
     "lowercase_topics": False,
     # --- Standalone-only extras (not part of the original plugin schema) ---
@@ -83,6 +91,14 @@ DEFAULT_SETTINGS = {
         "shiptype": "Type",
         "shiptypedisplay": "TypeDisplay",
         "jumprange": "JumpRange",
+        "fuelcapacity": "FuelCapacity",
+        "reservoircapacity": "ReservoirCapacity",
+        "cargocapacity": "CargoCapacity",
+        "shipident": "Ident",
+        "rebuy": "Rebuy",
+        "hullvalue": "HullValue",
+        "modulesvalue": "ModulesValue",
+        "docking": "Docking",
     },
 }
 

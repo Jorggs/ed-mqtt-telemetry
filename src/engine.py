@@ -13,6 +13,8 @@ and the MQTT publisher, reproducing EDMC-Telemetry's topic tree:
   <root>/Location/System
   <root>/Location/Station
   <root>/Location/State              (best-effort internal state blob)
+  <root>/Ship/...                    (name, type, jump range, capacities, values)
+  <root>/Docking                     (JSON: State, Pad, Station, DeniedReason)
 """
 
 import json
@@ -113,6 +115,24 @@ class Engine:
             self.mqtt.publish([t["ship"], t["shiptypedisplay"]], s.get("ShipTypeDisplay"), retain=True)
         if s.get("MaxJumpRange") is not None:
             self.mqtt.publish([t["ship"], t["jumprange"]], s.get("MaxJumpRange"), retain=True)
+        for state_key, topic_key in (
+            ("FuelCapacity", "fuelcapacity"),
+            ("ReservoirCapacity", "reservoircapacity"),
+            ("CargoCapacity", "cargocapacity"),
+            ("ShipIdent", "shipident"),
+            ("Rebuy", "rebuy"),
+            ("HullValue", "hullvalue"),
+            ("ModulesValue", "modulesvalue"),
+        ):
+            if s.get(state_key) is not None:
+                self.mqtt.publish([t["ship"], t[topic_key]], s.get(state_key), retain=True)
+
+    def _publish_docking(self):
+        """One retained JSON item with the whole docking state, e.g.
+        {"State": "Granted", "Pad": 23, "Station": "Abraham Lincoln",
+         "DeniedReason": null}"""
+        t = self.settings["topics"]
+        self.mqtt.publish([t["docking"]], dict(self.state_tracker.docking), retain=True)
 
     def _on_primed(self):
         """Called once the silent startup priming pass over the current
@@ -123,6 +143,8 @@ class Engine:
             self._publish_location()
         if self.settings.get("ship_info", True):
             self._publish_ship()
+        if self.settings.get("docking", True):
+            self._publish_docking()
         if self.settings.get("state", False):
             self.mqtt.publish([t["state"]], self.state_tracker.state, retain=True)
 
@@ -132,7 +154,7 @@ class Engine:
         t = self.settings["topics"]
 
         # Always keep internal state up to date, even during priming.
-        location_changed, state_changed, ship_changed = self.state_tracker.ingest(data)
+        location_changed, state_changed, ship_changed, docking_changed = self.state_tracker.ingest(data)
 
         if not live:
             return  # priming pass: update state silently, no publishing
@@ -151,6 +173,9 @@ class Engine:
 
         if self.settings.get("ship_info", True) and ship_changed:
             self._publish_ship()
+
+        if self.settings.get("docking", True) and docking_changed:
+            self._publish_docking()
 
         if self.settings.get("state", False) and state_changed:
             self.mqtt.publish([t["state"]], self.state_tracker.state, retain=True)

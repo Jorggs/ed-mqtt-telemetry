@@ -31,6 +31,20 @@ separate "Progress" event -- both fire together at load and are merged here
 into the combined [level, pct] pairs the HA templates expect.
 """
 
+# Docking state values published in the <root>/Docking JSON item. These are display
+# strings so Home Assistant can show them as they are.
+DOCK_IDLE = "Idle"
+DOCK_REQUESTED = "Requested"
+DOCK_GRANTED = "Granted"
+DOCK_DENIED = "Denied"
+DOCK_CANCELLED = "Cancelled"
+DOCK_TIMED_OUT = "Timed Out"
+DOCK_DOCKED = "Docked"
+
+# Events that mean you've left the station area, so any unfinished request
+# (or a stale denied/cancelled result) no longer applies.
+_LEAVING_EVENTS = ("SupercruiseEntry", "StartJump", "FSDJump")
+
 RANK_CATEGORIES = (
     "Combat", "Trade", "Explore", "Federation", "Empire",
     "CQC", "Exobiologist", "Soldier",
@@ -56,6 +70,16 @@ class StateTracker:
         self.station = None
         self.docked = False
 
+        # Docking request state, from the dedicated journal events
+        # (DockingRequested/Granted/Denied/Cancelled/Timeout, Docked/Undocked).
+        # Kept separate from the State blob so that schema doesn't change.
+        self.docking = {
+            "State": DOCK_IDLE,
+            "Pad": None,           # landing pad number once granted
+            "Station": None,       # station the request was made to
+            "DeniedReason": None,  # e.g. "NoSpace", "TooLarge", "Distance"
+        }
+
         self._rank_levels = {}
         self._rank_progress = {}
 
@@ -71,9 +95,66 @@ class StateTracker:
             "SystemPopulation": None,
             "StarPos": None,
             "MaxJumpRange": None,
+            # From Loadout (current ship's fitted capacities / values):
+            "FuelCapacity": None,        # main tank size, tonnes
+            "ReservoirCapacity": None,   # fuel reservoir size, tonnes
+            "CargoCapacity": None,       # cargo racks, tonnes
+            "ShipIdent": None,           # e.g. "AB-12C"
+            "Rebuy": None,
+            "HullValue": None,
+            "ModulesValue": None,
             "Rank": {},
             "Statistics": {},
         }
+
+    SHIP_KEYS = (
+        "ShipName", "ShipType", "ShipTypeDisplay", "MaxJumpRange", "FuelCapacity",
+        "ReservoirCapacity", "CargoCapacity", "ShipIdent", "Rebuy", "HullValue",
+        "ModulesValue",
+    )
+
+    def _ship_snapshot(self):
+        return tuple(self.state[k] for k in self.SHIP_KEYS)
+
+    def _docking_snapshot(self):
+        return tuple(self.docking[k] for k in ("State", "Pad", "Station", "DeniedReason"))
+
+    def _set_docking(self, state, pad=None, station=None, reason=None):
+        self.docking["State"] = state
+        self.docking["Pad"] = pad
+        self.docking["Station"] = station
+        self.docking["DeniedReason"] = reason
+
+    def _ingest_docking(self, name, event):
+        """Update the docking state machine from one journal event."""
+        d = self.docking
+        if name == "DockingRequested":
+            self._set_docking(DOCK_REQUESTED, station=event.get("StationName"))
+        elif name == "DockingGranted":
+            pad = event.get("LandingPad")
+            self._set_docking(DOCK_GRANTED, pad=pad,
+                              station=event.get("StationName") or d["Station"])
+        elif name == "DockingDenied":
+            self._set_docking(DOCK_DENIED, station=event.get("StationName") or d["Station"],
+                              reason=event.get("Reason") or "NoReason")
+        elif name == "DockingCancelled":
+            self._set_docking(DOCK_CANCELLED, station=event.get("StationName") or d["Station"])
+        elif name == "DockingTimeout":
+            self._set_docking(DOCK_TIMED_OUT, station=event.get("StationName") or d["Station"])
+        elif name == "Docked":
+            # Keep the pad number from the grant so it's still visible while docked
+            self._set_docking(DOCK_DOCKED, pad=d["Pad"] if d["State"] == DOCK_GRANTED else None,
+                              station=event.get("StationName"))
+        elif name == "Undocked":
+            self._set_docking(DOCK_IDLE)
+        elif name == "Location":
+            # Fires at login/respawn: start from a clean, known state
+            if event.get("Docked"):
+                self._set_docking(DOCK_DOCKED, station=event.get("StationName"))
+            else:
+                self._set_docking(DOCK_IDLE)
+        elif name in _LEAVING_EVENTS and d["State"] != DOCK_DOCKED:
+            self._set_docking(DOCK_IDLE)
 
     def _rebuild_rank(self):
         rank = {}
@@ -87,18 +168,15 @@ class StateTracker:
 
     def ingest(self, event):
         """Update internal state from one journal event dict. Returns a tuple
-        (location_changed, state_changed, ship_changed)."""
+        (location_changed, state_changed, ship_changed, docking_changed)."""
         name = event.get("event")
         location_changed = False
         state_changed = False
         ship_changed = False
 
-        prev_ship = (
-            self.state["ShipName"],
-            self.state["ShipType"],
-            self.state["ShipTypeDisplay"],
-            self.state["MaxJumpRange"],
-        )
+        prev_ship = self._ship_snapshot()
+        prev_docking = self._docking_snapshot()
+        self._ingest_docking(name, event)
 
         if "Credits" in event:
             self.state["Credits"] = event.get("Credits")
@@ -132,6 +210,15 @@ class StateTracker:
                 self.state["ShipTypeDisplay"] = localised
             if "MaxJumpRange" in event:
                 self.state["MaxJumpRange"] = event.get("MaxJumpRange")
+            fc = event.get("FuelCapacity")
+            if isinstance(fc, dict):
+                self.state["FuelCapacity"] = fc.get("Main")
+                self.state["ReservoirCapacity"] = fc.get("Reserve")
+            for src, dst in (("CargoCapacity", "CargoCapacity"), ("ShipIdent", "ShipIdent"),
+                             ("Rebuy", "Rebuy"), ("HullValue", "HullValue"),
+                             ("ModulesValue", "ModulesValue")):
+                if src in event:
+                    self.state[dst] = event.get(src)
             state_changed = True
 
         elif name == "ShipyardSwap":
@@ -223,13 +310,10 @@ class StateTracker:
             self.state["StationName"] = None
             state_changed = True
 
-        new_ship = (
-            self.state["ShipName"],
-            self.state["ShipType"],
-            self.state["ShipTypeDisplay"],
-            self.state["MaxJumpRange"],
-        )
+        new_ship = self._ship_snapshot()
         if new_ship != prev_ship:
             ship_changed = True
 
-        return location_changed, state_changed, ship_changed
+        docking_changed = self._docking_snapshot() != prev_docking
+
+        return location_changed, state_changed, ship_changed, docking_changed
