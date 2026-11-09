@@ -41,6 +41,7 @@ class Engine:
         self.game_watcher = None
 
         self._last_dashboard = {}
+        self._dashboard_paused = False
         self.running = False
 
     def _on_mqtt_status(self, connected):
@@ -182,8 +183,27 @@ class Engine:
 
     # ---- dashboard ---------------------------------------------------------
 
+    @staticmethod
+    def _in_game(data):
+        """False when Status.json describes no game session. In play, at least
+        one of Flags (in ship/fighter/SRV) or Flags2 (on foot/taxi/multicrew)
+        is always non-zero. At the main menu, and as the game shuts down, it
+        writes both as 0 (or leaves them out), which would otherwise overwrite
+        every retained flag sensor with "off"."""
+        return bool(data.get("Flags")) or bool(data.get("Flags2"))
+
     def _on_dashboard(self, data):
         t = self.settings["topics"]
+
+        if not self._in_game(data):
+            # Keep the last in-game values on the broker. _last_dashboard is
+            # left alone, so the first real update afterwards is compared
+            # against those values and only genuine changes are published.
+            if not self._dashboard_paused:
+                self._dashboard_paused = True
+                self.on_log("Not in game (Flags/Flags2 are 0): keeping last dashboard values.")
+            return
+        self._dashboard_paused = False
 
         if self.settings.get("dashboard_format", "Processed") == "Raw":
             if data != self._last_dashboard:
